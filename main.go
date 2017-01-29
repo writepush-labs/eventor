@@ -13,6 +13,7 @@ import (
 	"github.com/writepush-labs/eventor/dispatcher"
 	"github.com/satori/go.uuid"
 	"time"
+	"os"
 )
 
 func main() {
@@ -162,6 +163,15 @@ func main() {
 
 		return c.JSON(http.StatusOK, info)
 	})
+
+	// static dashboard server
+	dashboardRoot := "./ui/public"
+	if _, err := os.Stat(dashboardRoot); err == nil {
+		dashboardHandler := http.FileServer(http.Dir(dashboardRoot))
+		e.GET("/dashboard", echo.WrapHandler(http.StripPrefix("/dashboard", dashboardHandler)))
+		e.File("/dashboard/*", "./ui/public/index.html")
+		e.GET("/dashboard/build/*", echo.WrapHandler(http.StripPrefix("/dashboard", dashboardHandler)))
+	}
 
 	e.Logger.Fatal(e.Start(":9400"))
 }

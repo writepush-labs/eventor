@@ -9,7 +9,7 @@ import StreamPage from './pages/Stream'
 class Routes extends React.Component {
     render() {
         return (
-            <Router history={useRouterHistory(createHistory)({ basename: '/' })}>
+            <Router history={useRouterHistory(createHistory)({ basename: '/dashboard' })}>
                 <Route path="/" component={Container} name='Home'>
                     <IndexRedirect to="streams" />
                     <Route path="streams" component={StreamsPage} name='Streams'/>
