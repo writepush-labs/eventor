@@ -391,6 +391,7 @@ func (es *eventstore) PauseSubscription(subscriptionName string, reason string) 
 	subscription.Persisted = make(chan bool)
 	subscription.IsNew = false
 	subscription.IsActive = false
+	subscription.PauseReason = reason
 
 	es.meta.incoming <- subscription
 	<-subscription.Persisted
