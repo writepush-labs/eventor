@@ -167,10 +167,37 @@ func main() {
 	// static dashboard server
 	dashboardRoot := "./ui/public"
 	if _, err := os.Stat(dashboardRoot); err == nil {
+		logger.Info("Serving dev version of dashboard")
 		dashboardHandler := http.FileServer(http.Dir(dashboardRoot))
 		e.GET("/dashboard", echo.WrapHandler(http.StripPrefix("/dashboard", dashboardHandler)))
 		e.File("/dashboard/*", "./ui/public/index.html")
 		e.GET("/dashboard/build/*", echo.WrapHandler(http.StripPrefix("/dashboard", dashboardHandler)))
+	} else {
+		logger.Info("Serving built-in version of dashboard")
+		dashboardFs := assetFS()
+		pageRoutes := func(c echo.Context) error {
+			blob, err := dashboardFs.Asset("index.html")
+
+			if err != nil {
+				return c.String(http.StatusBadRequest, err.Error() + "\n")
+			}
+
+			return c.HTMLBlob(http.StatusOK, blob)
+		}
+		e.GET("/dashboard", pageRoutes)
+		e.GET("/dashboard/*", pageRoutes)
+		e.GET("/dashboard/build/*", func(c echo.Context) error {
+			f, err := dashboardFs.Open(c.Param("*"))
+
+			defer f.Close()
+
+			if err != nil {
+				return c.String(http.StatusBadRequest, err.Error() + "\n")
+			}
+
+			http.ServeContent(c.Response(), c.Request(), c.Param("*"), time.Now(), f)
+			return nil
+		})
 	}
 
 	e.Logger.Fatal(e.Start(":9400"))
