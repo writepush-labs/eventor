@@ -1,20 +1,31 @@
 package main
 
 import (
-	"github.com/writepush-labs/eventor/eventstore"
-	"github.com/writepush-labs/eventor/persistence"
-	log "github.com/writepush-labs/eventor/logging"
-	"net/http"
+	"encoding/json"
 	"flag"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
-	"io/ioutil"
-	"encoding/json"
-	"github.com/writepush-labs/eventor/dispatcher"
 	"github.com/satori/go.uuid"
-	"time"
+	"github.com/writepush-labs/eventor/dispatcher"
+	"github.com/writepush-labs/eventor/eventstore"
+	log "github.com/writepush-labs/eventor/logging"
+	"github.com/writepush-labs/eventor/persistence"
+	"io/ioutil"
+	"net/http"
 	"os"
+	"strconv"
+	"time"
 )
+
+func intval(number string) int {
+	v, err := strconv.Atoi(number)
+
+	if err != nil {
+		return 0
+	}
+
+	return v
+}
 
 func main() {
 	debug := flag.Bool("debug", false, "Debug mode")
@@ -49,7 +60,7 @@ func main() {
 
 		body, err := ioutil.ReadAll(c.Request().Body)
 		if err != nil {
-			return c.String(http.StatusInternalServerError, "Error occured: " + err.Error() + "\n")
+			return c.String(http.StatusInternalServerError, "Error occured: "+err.Error()+"\n")
 		}
 
 		var eventType string
@@ -66,40 +77,50 @@ func main() {
 		}
 
 		event := eventstore.Event{
-			Uuid: uuid.NewV4().String(),
-			Stream: stream,
-			Body: body,
-			Type: eventType,
+			Uuid:    uuid.NewV4().String(),
+			Stream:  stream,
+			Body:    body,
+			Type:    eventType,
 			Created: time.Now().String(),
 		}
 
 		persisted := es.AcceptEvent(event)
 
 		if persisted.Error != nil {
-			return c.String(http.StatusInternalServerError, "Error occured: " + persisted.Error.Error() + "\n")
+			return c.String(http.StatusInternalServerError, "Error occured: "+persisted.Error.Error()+"\n")
 		}
 
 		return c.String(http.StatusOK, "Created\n")
 	})
 
+	e.GET("/streams/:stream/:offset/:limit", func(c echo.Context) error {
+		events, err := storage.FetchEvents(c.Param("stream"), intval(c.Param("offset")), intval(c.Param("limit")))
+
+		if err != nil {
+			return c.String(http.StatusInternalServerError, err.Error()+"\n")
+		}
+
+		return c.JSON(http.StatusOK, events)
+	})
+
 	e.POST("/subscriptions/:name", func(c echo.Context) error {
-		subscription := eventstore.Subscription{ Name: c.Param("name") }
+		subscription := eventstore.Subscription{Name: c.Param("name")}
 
 		body, err := ioutil.ReadAll(c.Request().Body)
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		err = json.Unmarshal(body, &subscription)
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		subscription.IsActive = true
 
 		err = es.AcceptSubscription(subscription)
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		return c.String(http.StatusOK, "Created\n")
@@ -109,7 +130,7 @@ func main() {
 		subscriptions, err := storage.FetchSubscriptions(true)
 
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		return c.JSON(http.StatusOK, subscriptions)
@@ -118,7 +139,7 @@ func main() {
 	e.DELETE("/subscriptions/:name", func(c echo.Context) error {
 		err := es.RemoveSubscription(c.Param("name"))
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		return c.String(http.StatusOK, "Deleted\n")
@@ -129,7 +150,7 @@ func main() {
 
 		err := es.PauseSubscription(subscriptionName, "API request")
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		return c.String(http.StatusOK, "Paused\n")
@@ -140,7 +161,7 @@ func main() {
 
 		err := es.ResumeSubscription(subscriptionName)
 		if err != nil {
-			return c.String(http.StatusBadRequest, err.Error() + "\n")
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
 		return c.String(http.StatusOK, "Resumed\n")
@@ -179,7 +200,7 @@ func main() {
 			blob, err := dashboardFs.Asset("index.html")
 
 			if err != nil {
-				return c.String(http.StatusBadRequest, err.Error() + "\n")
+				return c.String(http.StatusBadRequest, err.Error()+"\n")
 			}
 
 			return c.HTMLBlob(http.StatusOK, blob)
@@ -192,7 +213,7 @@ func main() {
 			defer f.Close()
 
 			if err != nil {
-				return c.String(http.StatusBadRequest, err.Error() + "\n")
+				return c.String(http.StatusBadRequest, err.Error()+"\n")
 			}
 
 			http.ServeContent(c.Response(), c.Request(), c.Param("*"), time.Now(), f)

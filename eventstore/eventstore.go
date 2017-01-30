@@ -31,18 +31,19 @@ type Event struct {
 	Type          string
 	Body          []byte
 	PersistedCopy chan PersistedEvent
-	Created 	string
+	Created       string
 }
 
 type PersistedEvent struct {
-	Uuid          string
-	Position      int64
-	Stream        string
-	Type          string
-	Body          []byte
-	Error         error
-	IsOverflowing bool
-	Created       string
+	Uuid          string `json:"uuid"`
+	Position      int64  `json:"position"`
+	Stream        string `json:"stream"`
+	Type          string `json:"type"`
+	Body          []byte `json:"body"`
+	BodyJson      string `json:"body_json"`
+	Error         error  `json:"-"`
+	IsOverflowing bool   `json:"-"`
+	Created       string `json:"created"`
 }
 
 type Stream struct {
@@ -51,19 +52,19 @@ type Stream struct {
 }
 
 type Subscription struct {
-	Name             string `json:"name"`
-	Stream           string          `json:"stream"`
-	Url              string          `json:"url"`
-	LastReadPosition int64           `json:"position"`
-	RawHttpHeaders   json.RawMessage `json:"headers"`
+	Name             string            `json:"name"`
+	Stream           string            `json:"stream"`
+	Url              string            `json:"url"`
+	LastReadPosition int64             `json:"position"`
+	RawHttpHeaders   json.RawMessage   `json:"headers"`
 	HttpHeaders      map[string]string `json:"-"`
 	Persisted        chan bool         `json:"-"`
-	IsNew            bool             `json:"-"`
-	IsActive         bool            `json:"active"`
-	dispatching      chan interface{} `json:"-"`
-	PauseReason      string           `json:"pause_reason"`
-	Created          string           `json:"created"`
-	Updated          string           `json:"updated"`
+	IsNew            bool              `json:"-"`
+	IsActive         bool              `json:"active"`
+	dispatching      chan interface{}  `json:"-"`
+	PauseReason      string            `json:"pause_reason"`
+	Created          string            `json:"created"`
+	Updated          string            `json:"updated"`
 }
 
 type DeleteSubscriptionRequest struct {
@@ -344,7 +345,7 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 		}
 	}
 
-	existing, err := es.storage.FetchSubscription(s.Name);
+	existing, err := es.storage.FetchSubscription(s.Name)
 
 	if err != nil {
 		return err

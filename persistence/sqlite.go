@@ -244,12 +244,17 @@ func (stor *sqliteStorage) FetchEvents(streamName string, offset int, limit int)
 	events := []eventstore.PersistedEvent{}
 
 	for rows.Next() {
-		var event = eventstore.PersistedEvent{}
+		var event = eventstore.PersistedEvent{ Stream: streamName }
 		err = rows.Scan(&event.Position, &event.Uuid, &event.Body, &event.Type, &event.Created)
 		if err != nil {
 			stor.logger.Error("Failed to scan event from query iterator", log.String("error", err.Error()))
 			break
 		}
+
+		if event.Body[0] == '[' || event.Body[0] == '{' {
+			event.BodyJson = string(event.Body)
+		}
+
 		events = append(events, event)
 	}
 
