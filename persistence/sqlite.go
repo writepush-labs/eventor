@@ -336,7 +336,7 @@ func (stor *sqliteStorage) FetchSubscription(name string) (eventstore.Subscripti
 
 	err := stor.getMetaConnection().QueryRow(query, name).Scan(&s.Name, &s.Stream, &s.Url, &s.RawHttpHeaders, &s.LastReadPosition)
 
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		return s, err
 	}
 

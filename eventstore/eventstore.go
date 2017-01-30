@@ -344,6 +344,16 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 		}
 	}
 
+	existing, err := es.storage.FetchSubscription(s.Name);
+
+	if err != nil {
+		return err
+	}
+
+	if len(existing.Name) != 0 {
+		return errors.New("Subscription with this name already exists")
+	}
+
 	s.Persisted = make(chan bool)
 	s.IsNew = true
 	es.meta.incoming <- s
