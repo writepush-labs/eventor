@@ -244,6 +244,10 @@ func (stor *introspectSqliteStorage) GetStreamInfo(name string) (StreamInfo, err
 	return info, nil
 }
 
+func (stor *introspectSqliteStorage) Shutdown() {
+	stor.conn.Close()
+}
+
 func (stor *introspectSqliteStorage) startBackgroundSnapshots() {
 	ticker := time.NewTicker(1 * time.Second)
 

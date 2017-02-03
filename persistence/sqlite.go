@@ -368,6 +368,12 @@ func (stor *sqliteStorage) DeleteSubscription(name string) error {
 	return nil
 }
 
+func (stor *sqliteStorage) Shutdown() {
+	for _, conn := range stor.connections.conns {
+		conn.Close()
+	}
+}
+
 func CreateSqliteStorage(logger log.Logger) *sqliteStorage {
 	storage := new(sqliteStorage)
 	storage.logger = logger

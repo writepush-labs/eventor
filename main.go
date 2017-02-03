@@ -15,6 +15,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"os/signal"
+	"syscall"
 )
 
 func intval(number string) int {
@@ -42,6 +44,14 @@ func main() {
 	//es := eventstore.Create(persistence.CreateBoltStorage(logger), dispatcher.CreateHttpDispatcher(logger))
 	//es := eventstore.Create(persistence.CreateInMemorySqliteStorage(logger), dispatcher.CreateHttpDispatcher(logger))
 	//es := eventstore.Create(persistence.CreateMemoryStorage(logger), dispatcher.CreateHttpDispatcher(logger))
+
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	go func() {
+		<-sigc
+		storage.Shutdown()
+		introspect.Shutdown()
+	}()
 
 	err := es.LaunchAllSubscriptions()
 
