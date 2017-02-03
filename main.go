@@ -13,11 +13,17 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"strconv"
-	"time"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 )
+
+type ServerOptions struct {
+	Debug    *bool
+	Port     *string
+	DataPath *string
+}
 
 func intval(number string) int {
 	v, err := strconv.Atoi(number)
@@ -30,13 +36,16 @@ func intval(number string) int {
 }
 
 func main() {
-	debug := flag.Bool("debug", false, "Debug mode")
+	opts := &ServerOptions{}
+	opts.Debug = flag.Bool("debug", false, "Debug mode")
+	opts.Port = flag.String("port", "9400", "Port to listen on")
+	opts.DataPath = flag.String("data", "./data", "Path to data")
 
 	flag.Parse()
 
-	logger := log.CreateLogger(*debug)
+	logger := log.CreateLogger(*opts.Debug)
 
-	storage := persistence.CreateSqliteStorage(logger)
+	storage := persistence.CreateSqliteStorage(*opts.DataPath, logger)
 	es := eventstore.Create(storage, dispatcher.CreateHttpDispatcher(logger))
 	introspect := persistence.CreateIntrospectSqliteStorage()
 	es.EnableIntrospect(introspect)
@@ -231,5 +240,5 @@ func main() {
 		})
 	}
 
-	e.Logger.Fatal(e.Start(":9400"))
+	e.Logger.Fatal(e.Start(":" + *opts.Port))
 }

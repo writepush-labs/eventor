@@ -9,6 +9,7 @@ import (
 	log "github.com/writepush-labs/eventor/logging"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,10 +19,11 @@ type connections struct {
 	conns    map[string]*sql.DB
 	logger   log.Logger
 	inMemory bool
+	dataPath string
 }
 
 func (c *connections) openDatabase(name string, createSchemaCallback func(db *sql.DB)) *sql.DB {
-	dbPath := "./" + name + ".db"
+	dbPath := c.dataPath + name + ".db"
 	createSchema := false
 
 	if c.inMemory {
@@ -101,7 +103,7 @@ func (stor *sqliteStorage) getMetaConnection() *sql.DB {
 }
 
 func (stor *sqliteStorage) PersistEvent(e eventstore.Event) eventstore.PersistedEvent {
-	persisted := eventstore.PersistedEvent{ Stream: e.Stream, Body: e.Body, Type: e.Type, Created: e.Created, Uuid: e.Uuid }
+	persisted := eventstore.PersistedEvent{Stream: e.Stream, Body: e.Body, Type: e.Type, Created: e.Created, Uuid: e.Uuid}
 
 	tx, err := stor.getStreamConnection(e.Stream).Begin()
 
@@ -244,7 +246,7 @@ func (stor *sqliteStorage) FetchEvents(streamName string, offset int, limit int)
 	events := []eventstore.PersistedEvent{}
 
 	for rows.Next() {
-		var event = eventstore.PersistedEvent{ Stream: streamName }
+		var event = eventstore.PersistedEvent{Stream: streamName}
 		err = rows.Scan(&event.Position, &event.Uuid, &event.Body, &event.Type, &event.Created)
 		if err != nil {
 			stor.logger.Error("Failed to scan event from query iterator", log.String("error", err.Error()))
@@ -273,7 +275,7 @@ func (stor *sqliteStorage) FetchEvents(streamName string, offset int, limit int)
 func (stor *sqliteStorage) FetchSubscriptions(includeInactive bool) ([]eventstore.Subscription, error) {
 	query := "select name, stream, url, httpHeaders, lastReadPosition, isActive, pauseReason, createdAt, updatedAt from subscriptions"
 
-	if ! includeInactive {
+	if !includeInactive {
 		query += " where isActive = 1"
 	}
 
@@ -374,10 +376,18 @@ func (stor *sqliteStorage) Shutdown() {
 	}
 }
 
-func CreateSqliteStorage(logger log.Logger) *sqliteStorage {
+func CreateSqliteStorage(dataPath string, logger log.Logger) *sqliteStorage {
 	storage := new(sqliteStorage)
 	storage.logger = logger
 	storage.connections = connections{}
+
+	storage.connections.dataPath = strings.TrimRight(dataPath, "/ ")
+	if len(storage.connections.dataPath) == 0 {
+		storage.connections.dataPath = "./"
+	} else {
+		storage.connections.dataPath += "/"
+	}
+
 	storage.connections.logger = logger
 
 	return storage
