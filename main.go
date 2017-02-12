@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	"github.com/gorilla/websocket"
+	"errors"
 )
 
 type ServerOptions struct {
@@ -46,7 +48,8 @@ func main() {
 	logger := log.CreateLogger(*opts.Debug)
 
 	storage := persistence.CreateSqliteStorage(*opts.DataPath, logger)
-	es := eventstore.Create(storage, dispatcher.CreateHttpDispatcher(logger))
+	httpDispatcher := dispatcher.CreateHttpDispatcher(logger)
+	es := eventstore.Create(storage, httpDispatcher)
 	introspect := persistence.CreateIntrospectSqliteStorage()
 	es.EnableIntrospect(introspect)
 
@@ -73,6 +76,78 @@ func main() {
 		AllowOrigins: []string{"*"},
 		AllowMethods: []string{echo.GET},
 	}))
+
+	// initialize WebSockets
+	websocketUpgrader := &websocket.Upgrader{
+		// @todo seriously consider implications of this
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	e.GET("/incoming", func(c echo.Context) error {
+		ws, err := websocketUpgrader.Upgrade(c.Response(), c.Request(), nil)
+		if err != nil {
+			return err
+		}
+		defer ws.Close()
+
+		for {
+			msgType, msg, err := ws.ReadMessage()
+
+			if err != nil {
+				if err == websocket.ErrCloseSent {
+					logger.Info("Websocket connection closed by client")
+				} else {
+					logger.Error("Websocket error", log.String("error", err.Error()))
+				}
+				break
+			}
+
+			if msgType == websocket.CloseMessage {
+				logger.Info("Websocket connection closed by client")
+				break
+			}
+
+			if msgType != websocket.TextMessage {
+				ws.WriteJSON(map[string]string{ "type": "nak", "reason": "Only JSON encoded data is accepted" })
+				continue
+			}
+
+			// lets decode our message into the event
+			eventData := make(map[string]string)
+			err = json.Unmarshal(msg, &eventData)
+
+			if err != nil {
+				ws.WriteJSON(map[string]string{ "type": "nak", "reason": err.Error() })
+				logger.Error(err.Error())
+				continue
+			}
+
+			for _, requiredField := range []string{"stream", "type", "body"} {
+				if len(eventData[requiredField]) == 0 {
+					ws.WriteJSON(map[string]string{ "type": "nak", "reason": requiredField + " field is required" })
+					continue
+				}
+			}
+
+			event := eventstore.Event{
+				Stream: eventData["stream"],
+				Type: eventData["type"],
+				Body: []byte(eventData["body"]),
+				Uuid: uuid.NewV4().String(),
+				Created: time.Now().String(),
+			}
+
+			persisted := es.AcceptEvent(event)
+
+			if persisted.Error != nil {
+				ws.WriteJSON(map[string]string{ "type": "nak", "reason": persisted.Error.Error() })
+			} else {
+				ws.WriteJSON(map[string]string{ "type": "ack", "uuid": persisted.Uuid })
+			}
+		}
+
+		return nil
+	})
 
 	e.POST("/streams/:stream", func(c echo.Context) error {
 		stream := c.Param("stream")
@@ -153,6 +228,48 @@ func main() {
 		}
 
 		return c.JSON(http.StatusOK, subscriptions)
+	})
+
+	e.GET("/subscriptions/:name/ws", func(c echo.Context) error {
+		subscriptionName := c.Param("name")
+		err := httpDispatcher.RegisterWebsocketConnection(subscriptionName, func() (*websocket.Conn, error) {
+			var ws *websocket.Conn
+
+			s, err := storage.FetchSubscription(subscriptionName)
+
+			if err != nil {
+				return ws, err
+			}
+
+			if len(s.Name) == 0 {
+				return ws, errors.New("Unable to find subscription")
+			}
+
+			if len(s.Url) != 0 {
+				return ws, errors.New("Subscription has callback URL and can not be consumed over a Websocket")
+			}
+
+			ws, err = websocketUpgrader.Upgrade(c.Response(), c.Request(), nil)
+			if err != nil {
+				return ws, err
+			}
+
+			err = es.ResumeSubscription(subscriptionName)
+
+			if err != nil {
+				ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, err.Error()))
+				ws.Close()
+				return ws, err
+			}
+
+			return ws, nil
+		})
+
+		if err != nil {
+			return c.String(http.StatusBadRequest, err.Error()+"\n")
+		}
+
+		return nil
 	})
 
 	e.DELETE("/subscriptions/:name", func(c echo.Context) error {

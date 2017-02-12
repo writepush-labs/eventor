@@ -23,13 +23,15 @@ type IntrospectStorage interface {
 
 type EventDispatcher interface {
 	Dispatch(PersistedEvent, Subscription) error
+	OnSubscriptionPaused(Subscription)
+	OnSubscriptionResumed(Subscription)
 }
 
 type Event struct {
 	Uuid          string
-	Stream        string
-	Type          string
-	Body          []byte
+	Stream        string `json:"stream"`
+	Type          string `json:"type"`
+	Body          []byte `json:"body"`
 	PersistedCopy chan PersistedEvent
 	Created       string
 }
@@ -260,6 +262,7 @@ type eventstore struct {
 	storage           Storage
 	dispatcher        EventDispatcher
 	meta              *Stream
+	activity          *Stream
 	introspect        *Stream
 	introspectEnabled bool
 }
@@ -321,7 +324,7 @@ func (es *eventstore) DispatchEvent(e PersistedEvent, s Subscription) error {
 	return err
 }
 
-func (es *eventstore) AcceptSubscription(s Subscription) error {
+func (es *eventstore) validateNewSubscription(s Subscription) error {
 	subscriptionNameIsValid, _ := regexp.MatchString("(?i)^[a-z0-9_]+$", s.Name)
 
 	if !subscriptionNameIsValid {
@@ -330,10 +333,6 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 
 	if s.Stream == "" {
 		return errors.New("Stream name can not be empty")
-	}
-
-	if s.Url == "" {
-		return errors.New("Stream callback URL can not be empty")
 	}
 
 	if len(s.RawHttpHeaders) != 0 {
@@ -355,6 +354,16 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 		return errors.New("Subscription with this name already exists")
 	}
 
+	return nil
+}
+
+func (es *eventstore) AcceptSubscription(s Subscription) error {
+	err := es.validateNewSubscription(s)
+
+	if err != nil {
+		return err
+	}
+
 	s.Persisted = make(chan bool)
 	s.IsNew = true
 	es.meta.incoming <- s
@@ -362,6 +371,25 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 	<-s.Persisted
 
 	es.LaunchSubscription(s)
+
+	return nil
+}
+
+func (es *eventstore) AcceptActivitySubscription(s Subscription) error {
+	err := es.validateNewSubscription(s)
+
+	if err != nil {
+		return err
+	}
+
+	es.subscriptions.openLiveStream(&s, 10000, func(message interface{}) {
+		if !es.subscriptions.exists(s.Name) {
+			return
+		}
+
+		newEvent, _ := message.(Event)
+		es.DispatchEvent(newEvent, s)
+	})
 
 	return nil
 }
@@ -430,6 +458,10 @@ func (es *eventstore) ResumeSubscription(subscriptionName string) error {
 		return err
 	}
 
+	if len(s.Name) == 0 {
+		return errors.New("Unable to find subscription")
+	}
+
 	s.Persisted = make(chan bool)
 	s.IsNew = false
 	s.IsActive = true
@@ -477,7 +509,6 @@ func (es *eventstore) CatchupSubscription(s Subscription) {
 			err := es.DispatchEvent(newEvent, s)
 
 			if err != nil {
-				es.PauseSubscription(s.Name, err.Error())
 				return
 			}
 
