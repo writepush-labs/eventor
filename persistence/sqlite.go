@@ -27,7 +27,7 @@ func (c *connections) openDatabase(name string, createSchemaCallback func(db *sq
 	createSchema := false
 
 	if c.inMemory {
-		dbPath = ":memory:"
+		dbPath = "file:" + name + "?mode=memory&cache=shared"
 		createSchema = true
 	} else {
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -35,7 +35,7 @@ func (c *connections) openDatabase(name string, createSchemaCallback func(db *sq
 		}
 	}
 
-	db, err := sql.Open("sqlite3", dbPath+"?cache=shared")
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		panic(err)
 	}
@@ -229,7 +229,11 @@ func (stor *sqliteStorage) PersistSubscriptionPosition(subscriptionName string, 
 		return err
 	}
 
-	tx.Commit()
+	err = tx.Commit()
+
+	if err != nil {
+		return err
+	}
 
 	stor.logger.Info("Recorded last event position", log.String("subscription", subscriptionName), log.Int("position", int(position)))
 
