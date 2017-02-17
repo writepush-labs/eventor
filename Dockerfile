@@ -43,11 +43,7 @@ RUN set -ex \
 	&& ./make.bash \
 	&& rm -rf /*.patch \
 	&& mkdir -p $EVENTOR_BUILD_PATH && cd $EVENTOR_BUILD_PATH \
-    && wget -q "$EVENTOR_SRC_URL" -O eventor.tar.gz \
-    && tar -xzf eventor.tar.gz \
-    && mv "eventor-$EVENTOR_VERSION" eventor \
-    && rm eventor.tar.gz \
-    && cd eventor \
+    && wget -q "$EVENTOR_SRC_URL" -O eventor.tar.gz && mkdir eventor && tar -xzf eventor.tar.gz --strip-components=1 -C ./eventor && rm eventor.tar.gz && cd eventor \
     && glide install \
     && go build -v -ldflags "-X main.VERSION=$EVENTOR_VERSION" \
     && mkdir /writepush-labs && mv eventor /writepush-labs/eventor && chmod +x /writepush-labs/eventor \
