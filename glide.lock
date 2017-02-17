@@ -1,5 +1,5 @@
-hash: 5c6e9ef1d74f2e83dbc9cc6528d99d01e78eedd304810845d27452ba92a5f5be
-updated: 2017-02-17T14:42:42.130141963Z
+hash: a6d3452dbc85414108786790422a00a97bcbb64ed54588c6a940cf8e5367a485
+updated: 2017-02-17T15:39:46.189400883Z
 imports:
 - name: github.com/boltdb/bolt
   version: e9cf4fae01b5a8ff89d0ec6b32f0d9c9f79aefdd
@@ -26,6 +26,8 @@ imports:
   version: a554cf198fe0b1a80f528fec6f892b60b7004da5
 - name: github.com/satori/go.uuid
   version: b061729afc07e77a8aa4fad0a2fd840958f1942a
+- name: github.com/tylerb/graceful
+  version: 4654dfbb6ad53cb5e27f37d99b02e16c1872fbbb
 - name: github.com/uber-go/atomic
   version: 3b8db5e93c4c02efbc313e17b2e796b0914a01fb
 - name: github.com/uber-go/zap
