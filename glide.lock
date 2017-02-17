@@ -1,0 +1,56 @@
+hash: 5c6e9ef1d74f2e83dbc9cc6528d99d01e78eedd304810845d27452ba92a5f5be
+updated: 2017-02-17T14:42:42.130141963Z
+imports:
+- name: github.com/boltdb/bolt
+  version: e9cf4fae01b5a8ff89d0ec6b32f0d9c9f79aefdd
+- name: github.com/dgrijalva/jwt-go
+  version: a601269ab70c205d26370c16f7c81e9017c14e04
+- name: github.com/elazarl/go-bindata-assetfs
+  version: 9a6736ed45b44bf3835afeebb3034b57ed329f3e
+- name: github.com/labstack/echo
+  version: 95e1bd485f216ceb8d10e9f4cd3f65b49c1130ab
+  subpackages:
+  - middleware
+- name: github.com/labstack/gommon
+  version: f72d3c883f8ea180da8f085dd320804c41332ad1
+  subpackages:
+  - bytes
+  - color
+  - log
+  - random
+- name: github.com/mattn/go-colorable
+  version: 5411d3eea5978e6cdc258b30de592b60df6aba96
+- name: github.com/mattn/go-isatty
+  version: dda3de49cbfcec471bd7a70e6cc01fcc3ff90109
+- name: github.com/mattn/go-sqlite3
+  version: a554cf198fe0b1a80f528fec6f892b60b7004da5
+- name: github.com/satori/go.uuid
+  version: b061729afc07e77a8aa4fad0a2fd840958f1942a
+- name: github.com/uber-go/atomic
+  version: 3b8db5e93c4c02efbc313e17b2e796b0914a01fb
+- name: github.com/uber-go/zap
+  version: a5783ee4b216a927da8f839c45cfbf9d694e1467
+- name: github.com/valyala/bytebufferpool
+  version: e746df99fe4a3986f4d4f79e13c1e0117ce9c2f7
+- name: github.com/valyala/fasttemplate
+  version: d090d65668a286d9a180d43a19dfdc5dcad8fe88
+- name: golang.org/x/crypto
+  version: 453249f01cfeb54c3d549ddb75ff152ca243f9d8
+  subpackages:
+  - acme
+  - acme/autocert
+- name: golang.org/x/net
+  version: b4690f45fa1cafc47b1c280c2e75116efe40cc13
+  subpackages:
+  - context
+  - context/ctxhttp
+- name: golang.org/x/sys
+  version: 075e574b89e4c2d22f2286a7e2b919519c6f3547
+  subpackages:
+  - unix
+testImports:
+- name: github.com/kylelemons/godebug
+  version: d99083b96f422f8fd5a93bc02040acec769e178f
+  subpackages:
+  - diff
+  - pretty
