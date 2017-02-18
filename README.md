@@ -19,8 +19,12 @@ When subscription is created on a pre-existing stream with a number of events, s
 beginning of the stream. Eventor also tracks the position of last successfully delivered message for each subscription, no
 external tracking is required. However it is up to application to process events in an idempotent way.
 
-## Installing
-TODO
+## Installation
+Easiest way is to get a tiny Alpine based docker image:
+```
+docker run -it --rm -p 9400:9400 -v "$PWD/data":/writepush-labs/data writepushlabs/eventor
+```
+There is also a Mac OSX binary available for each release.
 
 ## HTTP API
 TODO
