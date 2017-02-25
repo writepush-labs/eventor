@@ -9,6 +9,7 @@ import:
 - package: github.com/satori/go.uuid
 - package: github.com/uber-go/zap
 - package: github.com/tylerb/graceful
+- package: github.com/gorilla/websocket
 testImport:
 - package: github.com/kylelemons/godebug
   subpackages:
