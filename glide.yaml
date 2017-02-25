@@ -1,0 +1,15 @@
+package: github.com/writepush-labs/eventor
+import:
+- package: github.com/boltdb/bolt
+- package: github.com/elazarl/go-bindata-assetfs
+- package: github.com/labstack/echo
+  subpackages:
+  - middleware
+- package: github.com/mattn/go-sqlite3
+- package: github.com/satori/go.uuid
+- package: github.com/uber-go/zap
+- package: github.com/tylerb/graceful
+testImport:
+- package: github.com/kylelemons/godebug
+  subpackages:
+  - pretty

@@ -7,6 +7,16 @@ import (
 	"sync"
 )
 
+type Eventstore interface {
+	AcceptEvent(Event) PersistedEvent
+	AcceptSubscription(Subscription) error
+	PauseSubscription(subscriptionName string, reason string) error
+	RemoveSubscription(subscriptionName string) error
+	ResumeSubscription(subscriptionName string) error
+	LaunchAllSubscriptions() error
+	EnableIntrospect(IntrospectStorage)
+}
+
 type Storage interface {
 	PersistEvent(Event) PersistedEvent
 	PersistSubscription(Subscription) error
@@ -370,7 +380,9 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 
 	<-s.Persisted
 
-	es.LaunchSubscription(s)
+	if s.IsActive {
+		es.LaunchSubscription(s)
+	}
 
 	return nil
 }
@@ -536,7 +548,7 @@ func (es *eventstore) EnableIntrospect(stor IntrospectStorage) {
 	es.introspectEnabled = true
 }
 
-func Create(storage Storage, dispatcher EventDispatcher) *eventstore {
+func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
 	store := new(eventstore)
 
 	store.storage = storage
@@ -557,7 +569,11 @@ func Create(storage Storage, dispatcher EventDispatcher) *eventstore {
 			event, _ := message.(DispatchedEvent)
 
 			// @todo handle error here!
-			store.storage.PersistSubscriptionPosition(event.SubscriptionName, event.Position)
+			err := store.storage.PersistSubscriptionPosition(event.SubscriptionName, event.Position)
+
+			if err != nil {
+				panic(err)
+			}
 
 		case DeleteSubscriptionRequest:
 			request, _ := message.(DeleteSubscriptionRequest)

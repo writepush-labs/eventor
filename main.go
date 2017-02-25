@@ -21,6 +21,8 @@ import (
 	"errors"
 )
 
+var VERSION string
+
 type ServerOptions struct {
 	Debug    *bool
 	Port     *string
@@ -39,13 +41,15 @@ func intval(number string) int {
 
 func main() {
 	opts := &ServerOptions{}
-	opts.Debug = flag.Bool("debug", false, "Debug mode")
+	opts.Debug = flag.Bool("prettylog", false, "Output pretty log")
 	opts.Port = flag.String("port", "9400", "Port to listen on")
 	opts.DataPath = flag.String("data", "./data", "Path to data")
 
 	flag.Parse()
 
 	logger := log.CreateLogger(*opts.Debug)
+
+	logger.Info("Starting Eventor", log.String("version", VERSION))
 
 	storage := persistence.CreateSqliteStorage(*opts.DataPath, logger)
 	httpDispatcher := dispatcher.CreateHttpDispatcher(logger)
