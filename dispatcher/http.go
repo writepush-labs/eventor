@@ -9,7 +9,6 @@ import (
 	"time"
 	"bytes"
 	"errors"
-	"github.com/writepush-labs/eventor/server"
 )
 
 func retry(callback func() error, numRetries int, waitSeconds int) error {
@@ -39,7 +38,7 @@ func retry(callback func() error, numRetries int, waitSeconds int) error {
 
 type HttpDispatcher struct {
 	logger log.Logger
-	websocketConnections server.NamedNetworkConnectionsMap
+	websocketConnections eventstore.NamedNetworkConnectionsMap
 }
 
 func (d *HttpDispatcher) Dispatch(e eventstore.PersistedEvent, s eventstore.Subscription) error {
@@ -112,7 +111,7 @@ func (d *HttpDispatcher) OnSubscriptionResumed(s eventstore.Subscription) {
 
 }
 
-func CreateHttpDispatcher(logger log.Logger, websocketConnections server.NamedNetworkConnectionsMap) *HttpDispatcher {
+func CreateHttpDispatcher(logger log.Logger, websocketConnections eventstore.NamedNetworkConnectionsMap) *HttpDispatcher {
 	return &HttpDispatcher{
 		logger: logger,
 		websocketConnections: websocketConnections,

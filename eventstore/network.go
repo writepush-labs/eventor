@@ -1,6 +1,4 @@
-package server
-
-import "github.com/writepush-labs/eventor/eventstore"
+package eventstore
 
 type AckMessage struct {
 	Success bool  `json:"success"`
@@ -8,8 +6,8 @@ type AckMessage struct {
 }
 
 type NetworkConnection interface {
-	ReadEvent() (eventstore.Event, error)
-	WriteEvent(eventstore.PersistedEvent) error
+	ReadEvent() (Event, error)
+	WriteEvent(PersistedEvent) error
 	ReadAckMessage() (AckMessage, error)
 	WriteAckMessage(AckMessage) error
 	Close() error

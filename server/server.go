@@ -51,7 +51,10 @@ func intval(number string) int {
 
 // @todo this should be abstracted to some consumeStream method or something with a callback to
 func (srv *server) startStreamReplication(streamName string, startFrom int64) error {
-	conn, err := srv.websocketConnections.Dial(streamName + "_replica", &http.Header{"x-start-from": strconv.Itoa(int(startFrom))})
+	headers := http.Header{
+		"x-start-from": []string{strconv.Itoa(int(startFrom))},
+	}
+	conn, err := srv.websocketConnections.Dial(streamName + "_replica", *srv.opts.Replicate + "/streams/" + streamName + "/ws", headers)
 
 	if err != nil {
 		return err
@@ -59,6 +62,8 @@ func (srv *server) startStreamReplication(streamName string, startFrom int64) er
 
 	defer conn.Close()
 	srv.consumeStream(conn)
+
+	return nil
 }
 
 func (srv *server) dispatchStreamCreated(streamName string) {
@@ -369,7 +374,7 @@ func (srv *server) initShutdownCleanup() {
 	}()
 }
 
-func (srv *server) consumeStream(conn NetworkConnection) error {
+func (srv *server) consumeStream(conn eventstore.NetworkConnection) error {
 	for {
 		event, err := conn.ReadEvent()
 
@@ -383,9 +388,9 @@ func (srv *server) consumeStream(conn NetworkConnection) error {
 		persisted, streamExisted := srv.es.AcceptEvent(event)
 
 		if persisted.Error == nil {
-			conn.WriteAckMessage(&AckMessage{ Success: true, Reason: persisted.Uuid })
+			conn.WriteAckMessage(eventstore.AckMessage{ Success: true, Reason: persisted.Uuid })
 		} else {
-			conn.WriteAckMessage(&AckMessage{ Success: false, Reason: persisted.Error.Error() })
+			conn.WriteAckMessage(eventstore.AckMessage{ Success: false, Reason: persisted.Error.Error() })
 		}
 
 		if ! streamExisted && event.Stream != ACTIVITY_STREAM_NAME {
@@ -402,11 +407,11 @@ func CreateServer(opts *ServerOptions, logger log.Logger) *server {
 		logger: logger,
 	}
 
-	srv.dispatcher           = dispatcher.CreateHttpDispatcher(logger)
+	srv.websocketConnections = CreateWebsocketConnectionsMap()
+	srv.dispatcher           = dispatcher.CreateHttpDispatcher(logger, srv.websocketConnections)
 	srv.storage              = persistence.CreateSqliteStorage(*opts.DataPath, logger)
 	srv.es                   = eventstore.Create(srv.storage, srv.dispatcher)
 	srv.introspect           = persistence.CreateIntrospectSqliteStorage()
-	srv.websocketConnections = CreateWebsocketConnectionsMap()
 
 	srv.es.EnableIntrospect(srv.introspect)
 

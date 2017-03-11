@@ -8,24 +8,6 @@ import (
 
 var VERSION string
 
-/*func startStreamReplication(url string) {
-	c, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-
-	}
-	defer c.Close()
-}
-
-// lets deal with replication
-	if len(*opts.Replicate) > 0 {
-		es.StartReplication();
-
-		// connect to all of the streams we are replicating
-		// connect to activity stream
-	}
-
-*/
-
 func main() {
 	opts := &server.ServerOptions{}
 	opts.Debug     = flag.Bool("prettylog", false, "Output pretty log")
