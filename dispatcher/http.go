@@ -3,14 +3,13 @@ package dispatcher
 import (
 	"github.com/writepush-labs/eventor/eventstore"
 	log "github.com/writepush-labs/eventor/logging"
-	"github.com/gorilla/websocket"
 	"net/http"
 	"strconv"
 	"fmt"
 	"time"
 	"bytes"
 	"errors"
-	"sync"
+	"github.com/writepush-labs/eventor/server"
 )
 
 func retry(callback func() error, numRetries int, waitSeconds int) error {
@@ -38,78 +37,35 @@ func retry(callback func() error, numRetries int, waitSeconds int) error {
 	return err
 }
 
-type httpDispatcher struct {
+type HttpDispatcher struct {
 	logger log.Logger
-
-	connsMutex sync.Mutex
-	conns map[string]*websocket.Conn
+	websocketConnections server.NamedNetworkConnectionsMap
 }
 
-func (d *httpDispatcher) GetWebsocketConnection(subscriptionName string) (*websocket.Conn, error) {
-	d.connsMutex.Lock()
-	defer d.connsMutex.Unlock()
-
-	conn, connExists := d.conns[subscriptionName]
-
-	if ! connExists {
-		return &websocket.Conn{}, errors.New("Connection does not exist")
-	}
-
-	return conn, nil
-}
-
-func (d *httpDispatcher) RegisterWebsocketConnection(subscriptionName string, connectionFactory func() (*websocket.Conn, error)) error {
-	d.connsMutex.Lock()
-	defer d.connsMutex.Unlock()
-
-	_, connExists := d.conns[subscriptionName]
-
-	if connExists {
-		return errors.New("Connection for subscription " + subscriptionName + " is already open")
-	}
-
-	newConn, err := connectionFactory()
-
-	if err != nil {
-		return err
-	}
-
-	d.conns[subscriptionName] = newConn
-
-	return nil
-}
-
-func (d *httpDispatcher) Dispatch(e eventstore.PersistedEvent, s eventstore.Subscription) error {
+func (d *HttpDispatcher) Dispatch(e eventstore.PersistedEvent, s eventstore.Subscription) error {
 	if len(s.Url) == 0 {
-		// handle websocket
-		conn, err := d.GetWebsocketConnection(s.Name)
+		conn, err := d.websocketConnections.Get(s.Name)
 
 		if err != nil {
-			d.logger.Error("Unable to open websocket connection", log.String("url", s.Url), log.String("error", err.Error()))
-			return nil
-		}
-
-		err = conn.WriteJSON(e)
-
-		if err != nil {
-			d.logger.Error("Unable to send event to websocket", log.String("url", s.Url), log.String("error", err.Error()))
+			d.logger.Error("Unable to get websocket connection", log.String("error", err.Error()))
 			return err
 		}
 
-		resp := map[string]string{}
-		err = conn.ReadJSON(&resp)
+		err = conn.WriteEvent(e)
 
 		if err != nil {
-			d.logger.Error("Received supposed ACK/NACK but can not read json", log.String("url", s.Url), log.String("error", err.Error()))
+			d.logger.Error("Unable to send event to websocket", log.String("error", err.Error()))
 			return err
 		}
 
-		if len(resp["type"]) == 0 {
-			d.logger.Error("Received supposed ACK/NACK but type is empty", log.String("url", s.Url), log.String("error", err.Error()))
+		ack, err := conn.ReadAckMessage()
+
+		if err != nil {
+			d.logger.Error("Received supposed ACK/NACK but can not read json", log.String("error", err.Error()))
 			return err
 		}
 
-		if resp["type"] == "nack" {
+		if ! ack.Success {
 			return errors.New("Received NACK from endpoint")
 		}
 
@@ -148,17 +104,17 @@ func (d *httpDispatcher) Dispatch(e eventstore.PersistedEvent, s eventstore.Subs
 	}, 5, 4)
 }
 
-func (d *httpDispatcher) OnSubscriptionPaused(s eventstore.Subscription) {
+func (d *HttpDispatcher) OnSubscriptionPaused(s eventstore.Subscription) {
 
 }
 
-func (d *httpDispatcher) OnSubscriptionResumed(s eventstore.Subscription) {
+func (d *HttpDispatcher) OnSubscriptionResumed(s eventstore.Subscription) {
 
 }
 
-func CreateHttpDispatcher(logger log.Logger) *httpDispatcher {
-	return &httpDispatcher{
+func CreateHttpDispatcher(logger log.Logger, websocketConnections server.NamedNetworkConnectionsMap) *HttpDispatcher {
+	return &HttpDispatcher{
 		logger: logger,
-		conns: make(map[string]*websocket.Conn),
+		websocketConnections: websocketConnections,
 	}
 }

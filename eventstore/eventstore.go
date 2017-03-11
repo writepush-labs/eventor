@@ -5,16 +5,20 @@ import (
 	"errors"
 	"regexp"
 	"sync"
+	"github.com/writepush-labs/eventor/utils"
 )
 
 type Eventstore interface {
-	AcceptEvent(Event) PersistedEvent
+	AcceptEvent(Event) (PersistedEvent, bool)
 	AcceptSubscription(Subscription) error
 	PauseSubscription(subscriptionName string, reason string) error
 	RemoveSubscription(subscriptionName string) error
 	ResumeSubscription(subscriptionName string) error
+	LaunchSubscription(Subscription, bool)
 	LaunchAllSubscriptions() error
 	EnableIntrospect(IntrospectStorage)
+	StartReplication() error
+	GetReplicatedStreams() *utils.PersistedCounterMap
 }
 
 type Storage interface {
@@ -25,10 +29,35 @@ type Storage interface {
 	FetchSubscriptions(bool) ([]Subscription, error)
 	FetchSubscription(name string) (Subscription, error)
 	DeleteSubscription(name string) error
+
+	PersistReplicatedStreams(map[string]int64) error
+	FetchReplicatedStreams() (map[string]int64, error)
+	Shutdown()
 }
 
 type IntrospectStorage interface {
 	RecordEvent(PersistedEvent) error
+	GetStats() map[string]StreamStats
+	GetStreamInfo(name string) (StreamInfo, error)
+	Shutdown()
+}
+
+type EventVariant struct {
+	Position int `json:"position"`
+	Uuid string `json:"uuid"`
+	Created string `json:"created"`
+	Body string `json:"body"`
+}
+
+type StreamInfo struct {
+	Name string `json:"name"`
+	EventVariants map[string][]EventVariant `json:"event_variants"`
+}
+
+type StreamStats struct {
+	Name string `json:"name"`
+	Total int64 `json:"total"`
+	EventTypeStats []map[string]interface{} `json:"event_types"`
 }
 
 type EventDispatcher interface {
@@ -44,6 +73,7 @@ type Event struct {
 	Body          []byte `json:"body"`
 	PersistedCopy chan PersistedEvent
 	Created       string
+	IsReplicated  bool
 }
 
 type PersistedEvent struct {
@@ -73,10 +103,12 @@ type Subscription struct {
 	Persisted        chan bool         `json:"-"`
 	IsNew            bool              `json:"-"`
 	IsActive         bool              `json:"active"`
+	IsTransient      bool              `json:"-"`
 	dispatching      chan interface{}  `json:"-"`
 	PauseReason      string            `json:"pause_reason"`
 	Created          string            `json:"created"`
 	Updated          string            `json:"updated"`
+	Encoding         string            `json:"encoding"`
 }
 
 type DeleteSubscriptionRequest struct {
@@ -88,6 +120,11 @@ type DispatchedEvent struct {
 	Stream           string
 	Position         int64
 	SubscriptionName string
+}
+
+type ReplicatedEvent struct {
+	Stream           string
+	Position         int64
 }
 
 type StreamCollection struct {
@@ -275,12 +312,21 @@ type eventstore struct {
 	activity          *Stream
 	introspect        *Stream
 	introspectEnabled bool
+	replicatedStreams *utils.PersistedCounterMap
 }
 
-func (es *eventstore) AcceptEvent(event Event) PersistedEvent {
+func (es *eventstore) AcceptEvent(event Event) (PersistedEvent, bool) {
 	// @todo validate stream name!
 	if len(event.Stream) == 0 {
-		return PersistedEvent{Error: errors.New("Event must have Stream")}
+		return PersistedEvent{Error: errors.New("Event must have Stream")}, false
+	}
+
+	if len(event.Type) == 0 {
+		return PersistedEvent{Error: errors.New("Event must have Type")}, false
+	}
+
+	if len(event.Body) == 0 {
+		return PersistedEvent{Error: errors.New("Event must have Body")}, false
 	}
 
 	event.PersistedCopy = make(chan PersistedEvent)
@@ -299,7 +345,14 @@ func (es *eventstore) AcceptEvent(event Event) PersistedEvent {
 		es.introspect.incoming <- persisted
 	}
 
-	return persisted
+	if event.IsReplicated {
+		es.meta.incoming <- &ReplicatedEvent{
+			Stream: persisted.Stream,
+			Position: persisted.Position,
+		}
+	}
+
+	return persisted, persisted.Position > 1
 }
 
 func (es *eventstore) SendEventToSubscriptions(e PersistedEvent) {
@@ -328,7 +381,11 @@ func (es *eventstore) DispatchEvent(e PersistedEvent, s Subscription) error {
 	err := es.dispatcher.Dispatch(e, s)
 
 	if err != nil {
-		es.PauseSubscription(s.Name, err.Error())
+		if s.IsTransient {
+			es.subscriptions.remove(s.Name)
+		} else {
+			es.PauseSubscription(s.Name, err.Error())
+		}
 	}
 
 	return err
@@ -381,27 +438,8 @@ func (es *eventstore) AcceptSubscription(s Subscription) error {
 	<-s.Persisted
 
 	if s.IsActive {
-		es.LaunchSubscription(s)
+		es.LaunchSubscription(s, true)
 	}
-
-	return nil
-}
-
-func (es *eventstore) AcceptActivitySubscription(s Subscription) error {
-	err := es.validateNewSubscription(s)
-
-	if err != nil {
-		return err
-	}
-
-	es.subscriptions.openLiveStream(&s, 10000, func(message interface{}) {
-		if !es.subscriptions.exists(s.Name) {
-			return
-		}
-
-		newEvent, _ := message.(Event)
-		es.DispatchEvent(newEvent, s)
-	})
 
 	return nil
 }
@@ -414,17 +452,21 @@ func (es *eventstore) LaunchAllSubscriptions() error {
 	}
 
 	for _, s := range subscriptions {
-		es.LaunchSubscription(s)
+		es.LaunchSubscription(s, true)
 	}
 
 	return nil
 }
 
-func (es *eventstore) LaunchSubscription(s Subscription) {
+func (es *eventstore) LaunchSubscription(s Subscription, doCatchup bool) {
 	es.subscriptions.add(s)
 
 	go func() {
-		es.CatchupSubscription(s)
+		if (doCatchup) {
+			es.catchupSubscription(s)
+		} else {
+			es.listenForLiveEvents(s)
+		}
 	}()
 }
 
@@ -460,6 +502,8 @@ func (es *eventstore) RemoveSubscription(subscriptionName string) error {
 		return errors.New("Unable to delete subscription")
 	}
 
+	es.subscriptions.remove(subscriptionName)
+
 	return nil
 }
 
@@ -481,12 +525,12 @@ func (es *eventstore) ResumeSubscription(subscriptionName string) error {
 	es.meta.incoming <- s
 	<-s.Persisted
 
-	es.LaunchSubscription(s)
+	es.LaunchSubscription(s, true)
 
 	return nil
 }
 
-func (es *eventstore) CatchupSubscription(s Subscription) {
+func (es *eventstore) catchupSubscription(s Subscription) {
 	eventsQueue, err := es.storage.FetchEvents(s.Stream, int(s.LastReadPosition), 100)
 
 	if len(eventsQueue) != 0 {
@@ -508,30 +552,34 @@ func (es *eventstore) CatchupSubscription(s Subscription) {
 		}
 
 		// there might be more events to process
-		es.CatchupSubscription(s)
+		es.catchupSubscription(s)
 	} else {
-		// this creates buffered stream for "live" subscriptions, once catchup is complete all of the events are dispatched on this stream
-		// @todo make buffer size configurable
-		es.subscriptions.openLiveStream(&s, 10000, func(message interface{}) {
-			if !es.subscriptions.exists(s.Name) {
-				return
-			}
-
-			newEvent, _ := message.(PersistedEvent)
-			err := es.DispatchEvent(newEvent, s)
-
-			if err != nil {
-				return
-			}
-
-			es.meta.incoming <- DispatchedEvent{SubscriptionName: s.Name, Stream: newEvent.Stream, Position: newEvent.Position}
-
-			if newEvent.IsOverflowing {
-				s.LastReadPosition = newEvent.Position
-				es.CatchupSubscription(s)
-			}
-		})
+		es.listenForLiveEvents(s)
 	}
+}
+
+func (es *eventstore) listenForLiveEvents(s Subscription) {
+	// this creates buffered stream for "live" subscriptions, once catchup is complete all of the events are dispatched on this stream
+	// @todo make buffer size configurable
+	es.subscriptions.openLiveStream(&s, 10000, func(message interface{}) {
+		if !es.subscriptions.exists(s.Name) {
+			return
+		}
+
+		newEvent, _ := message.(PersistedEvent)
+		err := es.DispatchEvent(newEvent, s)
+
+		if err != nil {
+			return
+		}
+
+		es.meta.incoming <- DispatchedEvent{SubscriptionName: s.Name, Stream: newEvent.Stream, Position: newEvent.Position}
+
+		if newEvent.IsOverflowing {
+			s.LastReadPosition = newEvent.Position
+			es.catchupSubscription(s)
+		}
+	})
 }
 
 func (es *eventstore) EnableIntrospect(stor IntrospectStorage) {
@@ -546,6 +594,26 @@ func (es *eventstore) EnableIntrospect(stor IntrospectStorage) {
 	})
 
 	es.introspectEnabled = true
+}
+
+func (es *eventstore) StartReplication() error {
+	replicatedStreams, err := es.storage.FetchReplicatedStreams()
+
+	if err != nil {
+		return err
+	}
+
+	es.replicatedStreams = utils.CreatePersistedCounterMap(func(streamPositions map[string]int64 ) {
+		es.storage.PersistReplicatedStreams(streamPositions)
+	}, 1)
+
+	es.replicatedStreams.Load(replicatedStreams);
+
+	return nil
+}
+
+func (es *eventstore) GetReplicatedStreams() *utils.PersistedCounterMap {
+	return es.replicatedStreams
 }
 
 func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
@@ -574,6 +642,10 @@ func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
 			if err != nil {
 				panic(err)
 			}
+
+		case ReplicatedEvent:
+			event, _ := message.(ReplicatedEvent)
+			store.replicatedStreams.Set(event.Stream, event.Position)
 
 		case DeleteSubscriptionRequest:
 			request, _ := message.(DeleteSubscriptionRequest)

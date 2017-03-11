@@ -7,74 +7,13 @@ import (
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/writepush-labs/eventor/eventstore"
+	"github.com/writepush-labs/eventor/utils"
 	"os"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"errors"
 )
-
-type EventVariant struct {
-	Position int `json:"position"`
-	Uuid string `json:"uuid"`
-	Created string `json:"created"`
-	Body string `json:"body"`
-}
-
-type StreamInfo struct {
-	Name string `json:"name"`
-	EventVariants map[string][]EventVariant `json:"event_variants"`
-}
-
-type StreamStats struct {
-	Name string `json:"name"`
-	Total int64 `json:"total"`
-	EventTypeStats []map[string]interface{} `json:"event_types"`
-}
-
-type counters struct {
-	sync.Mutex
-	values   map[string]int64
-	modified bool
-}
-
-func (c *counters) Get(key string) int64 {
-	c.Lock()
-	defer c.Unlock()
-	return c.values[key]
-}
-
-func (c *counters) GetAllIfModified() map[string]int64 {
-	c.Lock()
-	defer c.Unlock()
-
-	if c.modified {
-		return c.values
-	}
-
-	return map[string]int64{}
-}
-
-func (c *counters) GetAll() map[string]int64 {
-	c.Lock()
-	defer c.Unlock()
-	return c.values
-}
-
-func (c *counters) Incr(key string) int64 {
-	c.Lock()
-	defer c.Unlock()
-	c.values[key]++
-	c.modified = true
-	return c.values[key]
-}
-
-func (c *counters) ResetModified() {
-	c.Lock()
-	defer c.Unlock()
-	c.modified = false
-}
 
 type eventVariants struct {
 	sync.Mutex
@@ -123,28 +62,26 @@ func (ev *eventVariants) flushEvents() map[string]eventstore.PersistedEvent {
 }
 
 type introspectSqliteStorage struct {
-	counters      *counters
+	counters      *utils.PersistedCounterMap
 	eventVariants *eventVariants
 	conn          *sql.DB
 }
 
 func (stor *introspectSqliteStorage) RecordEvent(e eventstore.PersistedEvent) error {
-	stor.counters.Incr(e.Stream + "/" + e.Type)
-	stor.counters.Incr(e.Stream)
-
+	stor.counters.IncrementMulti(e.Stream + "/" + e.Type, e.Stream)
 	stor.eventVariants.addEvent(e)
 
 	return nil
 }
 
-func (stor *introspectSqliteStorage) GetStats() map[string]StreamStats {
-	res := make(map[string]StreamStats)
+func (stor *introspectSqliteStorage) GetStats() map[string]eventstore.StreamStats {
+	res := make(map[string]eventstore.StreamStats)
 
-	for key, stat := range stor.counters.GetAll() {
+	for key, stat := range stor.counters.GetCopy() {
 		stream := strings.SplitN(key, "/", 2)
 
 		if _, ok := res[stream[0]]; ! ok {
-			res[stream[0]] = StreamStats{ Name: stream[0], Total: 0 }
+			res[stream[0]] = eventstore.StreamStats{ Name: stream[0], Total: 0 }
 		}
 
 		if len(stream) == 1 {
@@ -171,6 +108,8 @@ func (stor *introspectSqliteStorage) LoadStats() error {
 		return err
 	}
 
+	counters := make(map[string]int64)
+
 	for rows.Next() {
 		var (
 			stream string
@@ -185,9 +124,9 @@ func (stor *introspectSqliteStorage) LoadStats() error {
 		}
 
 		if len(eventType) == 0 {
-			stor.counters.values[stream] = cnt
+			counters[stream] = cnt
 		} else {
-			stor.counters.values[stream + "/" + eventType] = cnt
+			counters[stream + "/" + eventType] = cnt
 		}
 	}
 
@@ -202,10 +141,10 @@ func (stor *introspectSqliteStorage) LoadStats() error {
 	return nil
 }
 
-func (stor *introspectSqliteStorage) GetStreamInfo(name string) (StreamInfo, error) {
-	info := StreamInfo{
+func (stor *introspectSqliteStorage) GetStreamInfo(name string) (eventstore.StreamInfo, error) {
+	info := eventstore.StreamInfo{
 		Name: name,
-		EventVariants: make(map[string][]EventVariant),
+		EventVariants: make(map[string][]eventstore.EventVariant),
 	}
 
 	query := "select event_type, body, position, uuid, created from event_variants where stream = ?"
@@ -230,7 +169,7 @@ func (stor *introspectSqliteStorage) GetStreamInfo(name string) (StreamInfo, err
 			break
 		}
 
-		info.EventVariants[eType] = append(info.EventVariants[eType], EventVariant{ Body: eBody, Position: ePos, Uuid: uuid, Created: created })
+		info.EventVariants[eType] = append(info.EventVariants[eType], eventstore.EventVariant{ Body: eBody, Position: ePos, Uuid: uuid, Created: created })
 	}
 
 	err = rows.Err()
@@ -246,64 +185,6 @@ func (stor *introspectSqliteStorage) GetStreamInfo(name string) (StreamInfo, err
 
 func (stor *introspectSqliteStorage) Shutdown() {
 	stor.conn.Close()
-}
-
-func (stor *introspectSqliteStorage) startBackgroundSnapshots() {
-	ticker := time.NewTicker(1 * time.Second)
-
-	for {
-		select {
-		case <-ticker.C:
-			modifiedStats := stor.counters.GetAllIfModified()
-			if len(modifiedStats) != 0 {
-				tx, err := stor.conn.Begin()
-
-				if err != nil {
-					continue
-				}
-
-				stmt, err := tx.Prepare("insert or replace into stream_stats (stream, event_type, stat_value) VALUES (?, ?, ?)")
-
-				if err != nil {
-					continue
-				}
-
-				for statKey, statValue := range modifiedStats {
-					var stream, eventType string
-
-					stats := strings.SplitN(statKey, "/", 2)
-
-					stream = stats[0]
-
-					if len(stats) > 1 {
-						eventType = stats[1]
-					}
-
-					stmt.Exec(stream, eventType, statValue)
-				}
-
-				stmt.Close()
-
-				stmt, err = tx.Prepare("insert or replace into event_variants (hash, stream, event_type, body, position, uuid, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
-
-				if err != nil {
-					continue
-				}
-
-				for hash, variant := range stor.eventVariants.flushEvents() {
-					stmt.Exec(hash, variant.Stream, variant.Type, variant.Body, variant.Position, variant.Uuid, variant.Created)
-				}
-
-				err = tx.Commit()
-
-				if err != nil {
-					continue
-				}
-
-				stor.counters.ResetModified()
-			}
-		}
-	}
 }
 
 func (stor *introspectSqliteStorage) openDatabase() {
@@ -334,15 +215,58 @@ func (stor *introspectSqliteStorage) openDatabase() {
 
 func CreateIntrospectSqliteStorage() *introspectSqliteStorage {
 	storage := &introspectSqliteStorage{
-		counters:      &counters{values: make(map[string]int64)},
 		eventVariants: &eventVariants{variants: make(map[string]eventstore.PersistedEvent)},
 	}
 
 	storage.openDatabase()
 
-	storage.LoadStats()
+	storage.counters = utils.CreatePersistedCounterMap(func(counters map[string]int64) {
+		tx, err := storage.conn.Begin()
 
-	go storage.startBackgroundSnapshots()
+		if err != nil {
+			panic(err)
+		}
+
+		stmt, err := tx.Prepare("insert or replace into stream_stats (stream, event_type, stat_value) VALUES (?, ?, ?)")
+
+		if err != nil {
+			panic(err)
+		}
+
+		for statKey, statValue := range counters {
+			var stream, eventType string
+
+			stats := strings.SplitN(statKey, "/", 2)
+
+			stream = stats[0]
+
+			if len(stats) > 1 {
+				eventType = stats[1]
+			}
+
+			stmt.Exec(stream, eventType, statValue)
+		}
+
+		stmt.Close()
+
+		stmt, err = tx.Prepare("insert or replace into event_variants (hash, stream, event_type, body, position, uuid, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
+
+		if err != nil {
+			panic(err)
+		}
+
+		for hash, variant := range storage.eventVariants.flushEvents() {
+			stmt.Exec(hash, variant.Stream, variant.Type, variant.Body, variant.Position, variant.Uuid, variant.Created)
+		}
+
+		err = tx.Commit()
+
+		if err != nil {
+			panic(err)
+		}
+	}, 1)
+
+	storage.LoadStats()
 
 	return storage
 }

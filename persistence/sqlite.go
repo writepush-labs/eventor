@@ -95,9 +95,16 @@ func (stor *sqliteStorage) getStreamConnection(streamName string) *sql.DB {
 
 func (stor *sqliteStorage) getMetaConnection() *sql.DB {
 	return stor.connections.get("_meta", func(db *sql.DB) {
-		_, err := db.Exec("create table subscriptions (name, stream, url, httpHeaders, lastReadPosition, isActive, createdAt, updatedAt, pauseReason)")
-		if err != nil {
-			panic(err)
+		schemas := []string{
+			"create table subscriptions (name, stream, url, httpHeaders, lastReadPosition, isActive, createdAt, updatedAt, pauseReason)",
+			"create table replicated_streams (name, position, createdAt)",
+		}
+
+		for _, schema := range schemas {
+			_, err := db.Exec(schema)
+			if err != nil {
+				panic(err)
+			}
 		}
 	})
 }
@@ -366,6 +373,63 @@ func (stor *sqliteStorage) DeleteSubscription(name string) error {
 	query := "delete from subscriptions where name = ?"
 
 	_, err := stor.getMetaConnection().Exec(query, name)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (stor *sqliteStorage) FetchReplicatedStreams() (map[string]int64, error) {
+	query := "select name, position from replicated_streams"
+
+	rows, err := stor.getMetaConnection().Query(query)
+	if err != nil {
+		return nil, err
+	}
+
+	streams := make(map[string]int64)
+
+	for rows.Next() {
+		var (
+			stream string
+			position int64
+		)
+
+		err = rows.Scan(&stream, &position)
+
+		if err != nil {
+			stor.logger.Error("Unable to scan replicated stream from query result", log.String("error", err.Error()))
+			continue
+		}
+
+		streams[stream] = position
+	}
+
+	return streams, nil
+}
+
+func (stor *sqliteStorage) PersistReplicatedStreams(streams map[string]int64) error {
+	tx, err := stor.getMetaConnection().Begin()
+
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare("insert into replicated_streams (name, position) values (?, ?)")
+
+	if err != nil {
+		return err
+	}
+
+	for stream, position := range streams {
+		stmt.Exec(stream, position)
+	}
+
+	stmt.Close()
+
+	err = tx.Commit()
 
 	if err != nil {
 		return err
