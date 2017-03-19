@@ -63,6 +63,14 @@ func (pcm *PersistedCounterMap) Set(key string, val int64) {
 	pcm.modifications++
 }
 
+func (pcm *PersistedCounterMap) KeyExists(key string) bool {
+	pcm.RLock()
+	defer pcm.RUnlock()
+
+	_, exists := pcm.counters[key]
+	return exists
+}
+
 func (pcm *PersistedCounterMap) Load(counters map[string]int64) {
 	pcm.Lock()
 	defer pcm.Unlock()
@@ -86,13 +94,13 @@ func (pcm *PersistedCounterMap) RequiresFlushing() bool {
 func (pcm *PersistedCounterMap) GetCopy() map[string]int64 {
 	pcm.RLock()
 	defer pcm.RUnlock()
-	var copy map[string]int64
+	cp := map[string]int64{}
 
 	for k, v := range pcm.counters {
-		copy[k] = v
+		cp[k] = v
 	}
 
-	return copy
+	return cp
 }
 
 func (pcm *PersistedCounterMap) setFlushingFlag(f bool) {
@@ -106,7 +114,7 @@ func (pcm *PersistedCounterMap) setFlushingFlag(f bool) {
 }
 
 func CreatePersistedCounterMap(flush func(c map[string]int64), checkpointInterval int64) *PersistedCounterMap {
-	pcm := &PersistedCounterMap{
+	pcm := PersistedCounterMap{
 		counters: make(map[string]int64),
 	}
 
@@ -126,5 +134,5 @@ func CreatePersistedCounterMap(flush func(c map[string]int64), checkpointInterva
 		}
 	}()
 
-	return pcm
+	return &pcm
 }

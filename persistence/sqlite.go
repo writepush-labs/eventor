@@ -97,7 +97,7 @@ func (stor *sqliteStorage) getMetaConnection() *sql.DB {
 	return stor.connections.get("_meta", func(db *sql.DB) {
 		schemas := []string{
 			"create table subscriptions (name, stream, url, httpHeaders, lastReadPosition, isActive, createdAt, updatedAt, pauseReason)",
-			"create table replicated_streams (name, position, createdAt)",
+			"create table mirrored_streams (name, position, createdAt, UNIQUE(name))",
 		}
 
 		for _, schema := range schemas {
@@ -381,8 +381,8 @@ func (stor *sqliteStorage) DeleteSubscription(name string) error {
 	return nil
 }
 
-func (stor *sqliteStorage) FetchReplicatedStreams() (map[string]int64, error) {
-	query := "select name, position from replicated_streams"
+func (stor *sqliteStorage) FetchMirroredStreams() (map[string]int64, error) {
+	query := "select name, position from mirrored_streams"
 
 	rows, err := stor.getMetaConnection().Query(query)
 	if err != nil {
@@ -400,7 +400,7 @@ func (stor *sqliteStorage) FetchReplicatedStreams() (map[string]int64, error) {
 		err = rows.Scan(&stream, &position)
 
 		if err != nil {
-			stor.logger.Error("Unable to scan replicated stream from query result", log.String("error", err.Error()))
+			stor.logger.Error("Unable to scan mirrored stream from query result", log.String("error", err.Error()))
 			continue
 		}
 
@@ -410,14 +410,14 @@ func (stor *sqliteStorage) FetchReplicatedStreams() (map[string]int64, error) {
 	return streams, nil
 }
 
-func (stor *sqliteStorage) PersistReplicatedStreams(streams map[string]int64) error {
+func (stor *sqliteStorage) PersistMirroredStreams(streams map[string]int64) error {
 	tx, err := stor.getMetaConnection().Begin()
 
 	if err != nil {
 		return err
 	}
 
-	stmt, err := tx.Prepare("insert into replicated_streams (name, position) values (?, ?)")
+	stmt, err := tx.Prepare("insert or replace into mirrored_streams (name, position) values (?, ?)")
 
 	if err != nil {
 		return err
@@ -430,6 +430,8 @@ func (stor *sqliteStorage) PersistReplicatedStreams(streams map[string]int64) er
 	stmt.Close()
 
 	err = tx.Commit()
+
+	stor.logger.Info("Flushed mirrored streams")
 
 	if err != nil {
 		return err

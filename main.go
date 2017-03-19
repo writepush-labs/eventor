@@ -13,7 +13,7 @@ func main() {
 	opts.Debug     = flag.Bool("prettylog", false, "Output pretty log")
 	opts.Port      = flag.String("port", "9400", "Port to listen on")
 	opts.DataPath  = flag.String("data", "./data", "Path to data")
-	opts.Replicate = flag.String("replicate", "", "URL to replicate from")
+	opts.Mirror    = flag.String("mirror", "", "URL to mirror from")
 
 	flag.Parse()
 

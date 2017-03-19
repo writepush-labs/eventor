@@ -4,7 +4,6 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/writepush-labs/eventor/eventstore"
 	"github.com/writepush-labs/eventor/utils"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"errors"
+	"fmt"
 )
 
 type eventVariants struct {
@@ -26,7 +26,6 @@ func (ev *eventVariants) addEvent(e eventstore.PersistedEvent) {
 	err := json.Unmarshal(e.Body, &eventStruct)
 
 	if err != nil {
-		fmt.Println(err.Error())
 		return
 	}
 
@@ -56,9 +55,9 @@ func (ev *eventVariants) addEvent(e eventstore.PersistedEvent) {
 func (ev *eventVariants) flushEvents() map[string]eventstore.PersistedEvent {
 	ev.Lock()
 	defer ev.Unlock()
-	copy := ev.variants
+	cp := ev.variants
 	ev.variants = make(map[string]eventstore.PersistedEvent)
-	return copy
+	return cp
 }
 
 type introspectSqliteStorage struct {

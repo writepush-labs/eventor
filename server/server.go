@@ -18,13 +18,11 @@ import (
 	"time"
 )
 
-const ACTIVITY_STREAM_NAME = "_activity"
-
 type ServerOptions struct {
 	Debug     *bool
 	Port      *string
 	DataPath  *string
-	Replicate *string
+	Mirror    *string
 }
 
 type server struct {
@@ -35,7 +33,7 @@ type server struct {
 	introspect eventstore.IntrospectStorage
 	echo *echo.Echo
 	dispatcher *dispatcher.HttpDispatcher
-	isReplicating bool
+	isMirroring bool
 	websocketConnections *websocketConnectionsMap
 }
 
@@ -50,30 +48,20 @@ func intval(number string) int {
 }
 
 // @todo this should be abstracted to some consumeStream method or something with a callback to
-func (srv *server) startStreamReplication(streamName string, startFrom int64) error {
+func (srv *server) startStreamMirroring(streamName string, startFrom int64) error {
 	headers := http.Header{
 		"x-start-from": []string{strconv.Itoa(int(startFrom))},
 	}
-	conn, err := srv.websocketConnections.Dial(streamName + "_replica", *srv.opts.Replicate + "/streams/" + streamName + "/ws", headers)
+	conn, err := srv.websocketConnections.Dial(streamName + "_mirror", *srv.opts.Mirror + "/streams/" + streamName + "/ws", headers)
 
 	if err != nil {
 		return err
 	}
 
-	defer conn.Close()
-	srv.consumeStream(conn)
+	srv.logger.Info("Started mirroring stream from position", log.String("stream", streamName), log.Int64("startFrom", startFrom))
+	go srv.consumeStream(conn, true)
 
 	return nil
-}
-
-func (srv *server) dispatchStreamCreated(streamName string) {
-	srv.es.AcceptEvent(eventstore.Event{
-		Uuid:    uuid.NewV4().String(),
-		Stream:  ACTIVITY_STREAM_NAME,
-		Body:    []byte("{\"name\":\"" + streamName + "\"}"),
-		Type:    "stream_created",
-		Created: time.Now().String(),
-	})
 }
 
 func (srv *server) initWebServer() {
@@ -97,7 +85,7 @@ func (srv *server) initStreamRoutes() {
 	})
 
 	// don't accept events in replication mode
-	if srv.isReplicating {
+	if srv.isMirroring {
 		return
 	}
 
@@ -131,14 +119,10 @@ func (srv *server) initStreamRoutes() {
 			Created: time.Now().String(),
 		}
 
-		persisted, streamExisted := srv.es.AcceptEvent(event)
+		persisted := srv.es.AcceptEvent(event)
 
 		if persisted.Error != nil {
 			return c.String(http.StatusInternalServerError, "Error occured: "+persisted.Error.Error()+"\n")
-		}
-
-		if ! streamExisted && stream != ACTIVITY_STREAM_NAME {
-			srv.dispatchStreamCreated(stream)
 		}
 
 		return c.String(http.StatusOK, "Created\n")
@@ -338,12 +322,14 @@ func (srv *server) initWebsocketRoutes() {
 			return c.String(http.StatusBadRequest, err.Error()+"\n")
 		}
 
+		srv.logger.Info("Accepted anonymous subscription to stream", log.String("stream", s.Stream))
+
 		srv.es.LaunchSubscription(s, doCatchup)
 
 		return nil
 	})
 
-	if srv.isReplicating {
+	if srv.isMirroring {
 		return
 	}
 
@@ -354,7 +340,7 @@ func (srv *server) initWebsocketRoutes() {
 		}
 		defer ws.Close()
 
-		err = srv.consumeStream(ws)
+		err = srv.consumeStream(ws, false)
 
 		if err != nil {
 			srv.logger.Error("Websocket error", log.String("error", err.Error()))
@@ -374,7 +360,7 @@ func (srv *server) initShutdownCleanup() {
 	}()
 }
 
-func (srv *server) consumeStream(conn eventstore.NetworkConnection) error {
+func (srv *server) consumeStream(conn eventstore.NetworkConnection, isMirroredStream bool) error {
 	for {
 		event, err := conn.ReadEvent()
 
@@ -382,10 +368,14 @@ func (srv *server) consumeStream(conn eventstore.NetworkConnection) error {
 			return err
 		}
 
-		event.Uuid    = uuid.NewV4().String()
-		event.Created = time.Now().String()
+		if isMirroredStream {
+			event.IsMirrored = true
+		} else {
+			event.Uuid    = uuid.NewV4().String()
+			event.Created = time.Now().String()
+		}
 
-		persisted, streamExisted := srv.es.AcceptEvent(event)
+		persisted := srv.es.AcceptEvent(event)
 
 		if persisted.Error == nil {
 			conn.WriteAckMessage(eventstore.AckMessage{ Success: true, Reason: persisted.Uuid })
@@ -393,8 +383,10 @@ func (srv *server) consumeStream(conn eventstore.NetworkConnection) error {
 			conn.WriteAckMessage(eventstore.AckMessage{ Success: false, Reason: persisted.Error.Error() })
 		}
 
-		if ! streamExisted && event.Stream != ACTIVITY_STREAM_NAME {
-			srv.dispatchStreamCreated(event.Stream)
+		if isMirroredStream && persisted.Stream == eventstore.ACTIVITY_STREAM_NAME && persisted.Type == eventstore.ACTIVITY_EVENT_TYPE_STREAM_CREATED {
+			if len(persisted.Meta) != 0 && len(persisted.Meta["streamName"]) != 0 {
+				srv.startStreamMirroring(persisted.Meta["streamName"], 0)
+			}
 		}
 	}
 
@@ -410,30 +402,45 @@ func CreateServer(opts *ServerOptions, logger log.Logger) *server {
 	srv.websocketConnections = CreateWebsocketConnectionsMap()
 	srv.dispatcher           = dispatcher.CreateHttpDispatcher(logger, srv.websocketConnections)
 	srv.storage              = persistence.CreateSqliteStorage(*opts.DataPath, logger)
-	srv.es                   = eventstore.Create(srv.storage, srv.dispatcher)
 	srv.introspect           = persistence.CreateIntrospectSqliteStorage()
+
+	es, err := eventstore.Create(srv.storage, srv.dispatcher)
+
+	if err != nil {
+		logger.Panic(err.Error(), log.String("when", "Create eventstore"))
+	}
+
+	srv.es = es
 
 	srv.es.EnableIntrospect(srv.introspect)
 
 	srv.initShutdownCleanup()
 
-	err := srv.es.LaunchAllSubscriptions()
+	err = srv.es.LaunchAllSubscriptions()
 
 	if err != nil {
 		logger.Panic(err.Error(), log.String("when", "Launch all subscriptions at startup"))
 	}
 
-	if len(*opts.Replicate) > 0 {
-		srv.isReplicating = true
-		srv.es.StartReplication()
+	if len(*opts.Mirror) > 0 {
+		logger.Info("Started in mirrored mode")
+		srv.isMirroring = true
 
-		// connect to replicated streams
-		for rStream, rPos := range srv.es.GetReplicatedStreams().GetCopy() {
-			srv.startStreamReplication(rStream, rPos)
+		mirroredStreams := srv.es.GetMirroredStreams()
+
+		if ! mirroredStreams.KeyExists(eventstore.ACTIVITY_STREAM_NAME) {
+			logger.Info("Activity stream is not tracked, adding tracking")
+			mirroredStreams.Set(eventstore.ACTIVITY_STREAM_NAME, 0)
 		}
 
-		// make sure we find out about new streams via _activity feed
+		// connect to replicated streams
+		for rStream, rPos := range mirroredStreams.GetCopy() {
+			err := srv.startStreamMirroring(rStream, rPos)
 
+			if err != nil {
+				logger.Error("Unable to mirror stream", log.String("stream", rStream), log.Int64("startFrom", rPos), log.String("error", err.Error()))
+			}
+		}
 	}
 
 	srv.initWebServer()

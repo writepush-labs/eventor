@@ -6,10 +6,15 @@ import (
 	"regexp"
 	"sync"
 	"github.com/writepush-labs/eventor/utils"
+	"github.com/satori/go.uuid"
+	"time"
 )
 
+const ACTIVITY_STREAM_NAME = "_activity"
+const ACTIVITY_EVENT_TYPE_STREAM_CREATED = "stream_created"
+
 type Eventstore interface {
-	AcceptEvent(Event) (PersistedEvent, bool)
+	AcceptEvent(Event) PersistedEvent
 	AcceptSubscription(Subscription) error
 	PauseSubscription(subscriptionName string, reason string) error
 	RemoveSubscription(subscriptionName string) error
@@ -17,8 +22,7 @@ type Eventstore interface {
 	LaunchSubscription(Subscription, bool)
 	LaunchAllSubscriptions() error
 	EnableIntrospect(IntrospectStorage)
-	StartReplication() error
-	GetReplicatedStreams() *utils.PersistedCounterMap
+	GetMirroredStreams() *utils.PersistedCounterMap
 }
 
 type Storage interface {
@@ -30,8 +34,8 @@ type Storage interface {
 	FetchSubscription(name string) (Subscription, error)
 	DeleteSubscription(name string) error
 
-	PersistReplicatedStreams(map[string]int64) error
-	FetchReplicatedStreams() (map[string]int64, error)
+	PersistMirroredStreams(map[string]int64) error
+	FetchMirroredStreams() (map[string]int64, error)
 	Shutdown()
 }
 
@@ -73,7 +77,7 @@ type Event struct {
 	Body          []byte `json:"body"`
 	PersistedCopy chan PersistedEvent
 	Created       string
-	IsReplicated  bool
+	IsMirrored    bool
 }
 
 type PersistedEvent struct {
@@ -86,6 +90,7 @@ type PersistedEvent struct {
 	Error         error  `json:"-"`
 	IsOverflowing bool   `json:"-"`
 	Created       string `json:"created"`
+	Meta          map[string]string `json:"-"`
 }
 
 type Stream struct {
@@ -120,11 +125,6 @@ type DispatchedEvent struct {
 	Stream           string
 	Position         int64
 	SubscriptionName string
-}
-
-type ReplicatedEvent struct {
-	Stream           string
-	Position         int64
 }
 
 type StreamCollection struct {
@@ -312,21 +312,55 @@ type eventstore struct {
 	activity          *Stream
 	introspect        *Stream
 	introspectEnabled bool
-	replicatedStreams *utils.PersistedCounterMap
+	mirroredStreams   *utils.PersistedCounterMap
 }
 
-func (es *eventstore) AcceptEvent(event Event) (PersistedEvent, bool) {
+func (es *eventstore) AcceptEvent(event Event) PersistedEvent {
 	// @todo validate stream name!
 	if len(event.Stream) == 0 {
-		return PersistedEvent{Error: errors.New("Event must have Stream")}, false
+		return PersistedEvent{Error: errors.New("Event must have Stream")}
 	}
 
 	if len(event.Type) == 0 {
-		return PersistedEvent{Error: errors.New("Event must have Type")}, false
+		return PersistedEvent{Error: errors.New("Event must have Type")}
 	}
 
 	if len(event.Body) == 0 {
-		return PersistedEvent{Error: errors.New("Event must have Body")}, false
+		return PersistedEvent{Error: errors.New("Event must have Body")}
+	}
+
+	if event.Stream == ACTIVITY_STREAM_NAME && event.IsMirrored {
+		persisted := PersistedEvent{
+			Stream: event.Stream,
+			Body: event.Body,
+			Type: event.Type,
+			Created: event.Created,
+			Uuid: event.Uuid,
+			Position: es.mirroredStreams.Increment(ACTIVITY_STREAM_NAME),
+		}
+
+		// only handle stream_created for now
+		if event.Type == ACTIVITY_EVENT_TYPE_STREAM_CREATED {
+			newStreamData := map[string]string{}
+
+			err := json.Unmarshal(event.Body, &newStreamData)
+
+			if err != nil {
+				return PersistedEvent{Error: err}
+			}
+
+			if len(newStreamData["name"]) == 0 {
+				return PersistedEvent{Error: errors.New("stream_created event doesnt have stream name")}
+			}
+
+			es.mirroredStreams.Set(newStreamData["name"], 0)
+
+			persisted.Meta = map[string]string{
+				"streamName": newStreamData["name"],
+			}
+		}
+
+		return persisted
 	}
 
 	event.PersistedCopy = make(chan PersistedEvent)
@@ -339,20 +373,21 @@ func (es *eventstore) AcceptEvent(event Event) (PersistedEvent, bool) {
 	stream.incoming <- event
 	persisted := <-event.PersistedCopy
 
+	if event.IsMirrored {
+		es.mirroredStreams.Increment(event.Stream)
+	}
+
+	if (persisted.Position == 1 && ! event.IsMirrored && event.Stream != ACTIVITY_STREAM_NAME) {
+		es.dispatchStreamCreated(persisted.Stream)
+	}
+
 	es.SendEventToSubscriptions(persisted)
 
 	if es.introspectEnabled {
 		es.introspect.incoming <- persisted
 	}
 
-	if event.IsReplicated {
-		es.meta.incoming <- &ReplicatedEvent{
-			Stream: persisted.Stream,
-			Position: persisted.Position,
-		}
-	}
-
-	return persisted, persisted.Position > 1
+	return persisted
 }
 
 func (es *eventstore) SendEventToSubscriptions(e PersistedEvent) {
@@ -542,6 +577,7 @@ func (es *eventstore) catchupSubscription(s Subscription) {
 			err = es.DispatchEvent(e, s)
 
 			if err != nil {
+				panic(err)
 				return
 			}
 
@@ -596,27 +632,37 @@ func (es *eventstore) EnableIntrospect(stor IntrospectStorage) {
 	es.introspectEnabled = true
 }
 
-func (es *eventstore) StartReplication() error {
-	replicatedStreams, err := es.storage.FetchReplicatedStreams()
+func (es *eventstore) setupMirroring() error {
+	mirroredStreams, err := es.storage.FetchMirroredStreams()
 
 	if err != nil {
 		return err
 	}
 
-	es.replicatedStreams = utils.CreatePersistedCounterMap(func(streamPositions map[string]int64 ) {
-		es.storage.PersistReplicatedStreams(streamPositions)
+	es.mirroredStreams = utils.CreatePersistedCounterMap(func(streamPositions map[string]int64 ) {
+		es.storage.PersistMirroredStreams(streamPositions)
 	}, 1)
 
-	es.replicatedStreams.Load(replicatedStreams);
+	es.mirroredStreams.Load(mirroredStreams);
 
 	return nil
 }
 
-func (es *eventstore) GetReplicatedStreams() *utils.PersistedCounterMap {
-	return es.replicatedStreams
+func (es *eventstore) dispatchStreamCreated(streamName string) {
+	es.AcceptEvent(Event{
+		Uuid:    uuid.NewV4().String(),
+		Stream:  ACTIVITY_STREAM_NAME,
+		Body:    []byte("{\"name\":\"" + streamName + "\"}"),
+		Type:    ACTIVITY_EVENT_TYPE_STREAM_CREATED,
+		Created: time.Now().String(),
+	})
 }
 
-func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
+func (es *eventstore) GetMirroredStreams() *utils.PersistedCounterMap {
+	return es.mirroredStreams
+}
+
+func Create(storage Storage, dispatcher EventDispatcher) (Eventstore, error) {
 	store := new(eventstore)
 
 	store.storage = storage
@@ -643,10 +689,6 @@ func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
 				panic(err)
 			}
 
-		case ReplicatedEvent:
-			event, _ := message.(ReplicatedEvent)
-			store.replicatedStreams.Set(event.Stream, event.Position)
-
 		case DeleteSubscriptionRequest:
 			request, _ := message.(DeleteSubscriptionRequest)
 
@@ -660,7 +702,13 @@ func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
 		}
 	})
 
+	err := store.setupMirroring()
+
+	if err != nil {
+		return store, err
+	}
+
 	store.dispatcher = dispatcher
 
-	return store
+	return store, nil
 }
