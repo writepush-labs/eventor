@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+const (
+	DEFAULT_DISPATCHER_NAME = "default"
+)
+
 type Eventstore interface {
 	AcceptEvent(Event) PersistedEvent
 	AcceptSubscription(Subscription) error
@@ -75,6 +79,7 @@ type Subscription struct {
 	PauseReason      string            `json:"pause_reason"`
 	Created          string            `json:"created"`
 	Updated          string            `json:"updated"`
+	DispatcherName   string            `json:"-"`
 }
 
 type DeleteSubscriptionRequest struct {
@@ -268,7 +273,7 @@ type eventstore struct {
 	streams           StreamCollection
 	subscriptions     SubscriptionCollection
 	storage           Storage
-	dispatcher        EventDispatcher
+	dispatchers       map[string]EventDispatcher
 	meta              *Stream
 	introspect        *Stream
 	introspectEnabled bool
@@ -322,7 +327,17 @@ func (es *eventstore) SendEventToSubscriptions(e PersistedEvent) {
 }
 
 func (es *eventstore) DispatchEvent(e PersistedEvent, s Subscription) error {
-	err := es.dispatcher.Dispatch(e, s)
+	var dispatcher EventDispatcher
+
+	if len(s.DispatcherName) != 0 {
+		dispatcher = es.dispatchers[s.DispatcherName]
+	}
+
+	if dispatcher == nil {
+		dispatcher = es.dispatchers[DEFAULT_DISPATCHER_NAME]
+	}
+
+	err := dispatcher.Dispatch(e, s)
 
 	if err != nil {
 		es.PauseSubscription(s.Name, err.Error())
@@ -517,8 +532,16 @@ func (es *eventstore) EnableIntrospect(stor IntrospectStorage) {
 	es.introspectEnabled = true
 }
 
-func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
+func Create(storage Storage, dispatchers map[string]EventDispatcher) (Eventstore, error) {
 	store := new(eventstore)
+
+	_, defaultDispatcherProvided := dispatchers[DEFAULT_DISPATCHER_NAME]
+
+	if ! defaultDispatcherProvided {
+		return store, errors.New("Dispatcher with name " + DEFAULT_DISPATCHER_NAME + " has to be provided")
+	}
+
+	store.dispatchers = dispatchers
 
 	store.storage = storage
 	store.streams = StreamCollection{}
@@ -557,7 +580,5 @@ func Create(storage Storage, dispatcher EventDispatcher) Eventstore {
 		}
 	})
 
-	store.dispatcher = dispatcher
-
-	return store
+	return store, nil
 }

@@ -50,7 +50,14 @@ func main() {
 	logger.Info("Starting Eventor", log.String("version", VERSION))
 
 	storage := persistence.CreateSqliteStorage(*opts.DataPath, logger)
-	es := eventstore.Create(storage, dispatcher.CreateHttpDispatcher(logger))
+	es, err := eventstore.Create(storage, map[string]eventstore.EventDispatcher{
+		"default": dispatcher.CreateHttpDispatcher(logger),
+	})
+
+	if err != nil {
+		logger.Panic(err.Error(), log.String("when", "Creating eventstore instance"))
+	}
+
 	introspect := persistence.CreateIntrospectSqliteStorage()
 	es.EnableIntrospect(introspect)
 
@@ -66,7 +73,7 @@ func main() {
 		introspect.Shutdown()
 	}()
 
-	err := es.LaunchAllSubscriptions()
+	err = es.LaunchAllSubscriptions()
 
 	if err != nil {
 		logger.Panic(err.Error(), log.String("when", "Launch all subscriptions at startup"))
