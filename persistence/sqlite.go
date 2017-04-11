@@ -15,7 +15,7 @@ import (
 )
 
 type connections struct {
-	sync.Mutex
+	sync.RWMutex
 	conns    map[string]*sql.DB
 	logger   log.Logger
 	inMemory bool
@@ -63,10 +63,6 @@ func (c *connections) openDatabase(name string, createSchemaCallback func(db *sq
 func (c *connections) get(name string, schemaFactory func(db *sql.DB)) *sql.DB {
 	c.Lock()
 
-	if c.conns == nil {
-		c.conns = make(map[string]*sql.DB)
-	}
-
 	conn, connExists := c.conns[name]
 
 	if !connExists {
@@ -77,6 +73,14 @@ func (c *connections) get(name string, schemaFactory func(db *sql.DB)) *sql.DB {
 	c.Unlock()
 
 	return conn
+}
+
+func (c *connections) exists(name string) bool {
+	c.RLock()
+	defer c.RUnlock()
+
+	_, exists := c.conns[name]
+	return exists
 }
 
 type sqliteStorage struct {
@@ -241,13 +245,17 @@ func (stor *sqliteStorage) PersistSubscriptionPosition(subscriptionName string, 
 }
 
 func (stor *sqliteStorage) FetchEvents(streamName string, offset int, limit int) ([]eventstore.PersistedEvent, error) {
+	events := []eventstore.PersistedEvent{}
+
+	if !stor.connections.exists(streamName) {
+		return events, nil
+	}
+
 	query := "select rowid as position, uuid, body, type, created from events where rowid > " + strconv.Itoa(offset) + " order by rowid limit " + strconv.Itoa(limit)
 	rows, err := stor.getStreamConnection(streamName).Query(query)
 	if err != nil {
 		return nil, err
 	}
-
-	events := []eventstore.PersistedEvent{}
 
 	for rows.Next() {
 		var event = eventstore.PersistedEvent{Stream: streamName}
@@ -383,7 +391,9 @@ func (stor *sqliteStorage) Shutdown() {
 func CreateSqliteStorage(dataPath string, logger log.Logger) *sqliteStorage {
 	storage := new(sqliteStorage)
 	storage.logger = logger
-	storage.connections = connections{}
+	storage.connections = connections{
+		conns: make(map[string]*sql.DB),
+	}
 
 	storage.connections.dataPath = strings.TrimRight(dataPath, "/ ")
 	if len(storage.connections.dataPath) == 0 {
@@ -400,7 +410,9 @@ func CreateSqliteStorage(dataPath string, logger log.Logger) *sqliteStorage {
 func CreateInMemorySqliteStorage(logger log.Logger) *sqliteStorage {
 	storage := new(sqliteStorage)
 	storage.logger = logger
-	storage.connections = connections{}
+	storage.connections = connections{
+		conns: make(map[string]*sql.DB),
+	}
 	storage.connections.inMemory = true
 	storage.connections.logger = logger
 
