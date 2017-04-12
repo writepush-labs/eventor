@@ -10,8 +10,11 @@ import (
 	"time"
 )
 
-const ACTIVITY_STREAM_NAME = "_activity"
-const ACTIVITY_EVENT_TYPE_STREAM_CREATED = "stream_created"
+const (
+	DEFAULT_DISPATCHER_NAME            = "default"
+	ACTIVITY_STREAM_NAME               = "_activity"
+	ACTIVITY_EVENT_TYPE_STREAM_CREATED = "stream_created"
+)
 
 type Eventstore interface {
 	AcceptEvent(Event) PersistedEvent
@@ -114,6 +117,7 @@ type Subscription struct {
 	Created          string            `json:"created"`
 	Updated          string            `json:"updated"`
 	Encoding         string            `json:"encoding"`
+	DispatcherName   string            `json:"-"`
 }
 
 type DeleteSubscriptionRequest struct {
@@ -307,7 +311,7 @@ type eventstore struct {
 	streams           StreamCollection
 	subscriptions     SubscriptionCollection
 	storage           Storage
-	dispatcher        EventDispatcher
+	dispatchers       map[string]EventDispatcher
 	meta              *Stream
 	activity          *Stream
 	introspect        *Stream
@@ -413,7 +417,17 @@ func (es *eventstore) SendEventToSubscriptions(e PersistedEvent) {
 }
 
 func (es *eventstore) DispatchEvent(e PersistedEvent, s Subscription) error {
-	err := es.dispatcher.Dispatch(e, s)
+	var dispatcher EventDispatcher
+
+	if len(s.DispatcherName) != 0 {
+		dispatcher = es.dispatchers[s.DispatcherName]
+	}
+
+	if dispatcher == nil {
+		dispatcher = es.dispatchers[DEFAULT_DISPATCHER_NAME]
+	}
+
+	err := dispatcher.Dispatch(e, s)
 
 	if err != nil {
 		if s.IsTransient {
@@ -662,8 +676,16 @@ func (es *eventstore) GetMirroredStreams() *utils.PersistedCounterMap {
 	return es.mirroredStreams
 }
 
-func Create(storage Storage, dispatcher EventDispatcher) (Eventstore, error) {
+func Create(storage Storage, dispatchers map[string]EventDispatcher) (Eventstore, error) {
 	store := new(eventstore)
+
+	_, defaultDispatcherProvided := dispatchers[DEFAULT_DISPATCHER_NAME]
+
+	if ! defaultDispatcherProvided {
+		return store, errors.New("Dispatcher with name " + DEFAULT_DISPATCHER_NAME + " has to be provided")
+	}
+
+	store.dispatchers = dispatchers
 
 	store.storage = storage
 	store.streams = StreamCollection{}
@@ -707,8 +729,6 @@ func Create(storage Storage, dispatcher EventDispatcher) (Eventstore, error) {
 	if err != nil {
 		return store, err
 	}
-
-	store.dispatcher = dispatcher
 
 	return store, nil
 }

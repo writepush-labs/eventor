@@ -33,7 +33,7 @@ func createFakeDispatcher() *fakeDispatcher {
 func setup() {
 	Storage    = persistence.CreateInMemorySqliteStorage(log.CreateLogger(false))
 	Dispatcher = createFakeDispatcher()
-	ES         = eventstore.Create(Storage, Dispatcher)
+	ES, _      = eventstore.Create(Storage, map[string]eventstore.EventDispatcher{ "default": Dispatcher })
 }
 
 var EventForInactiveStream = eventstore.Event{ Stream: "inactive_test", Type: "fake", Body: []byte("hello world") }

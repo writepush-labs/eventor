@@ -38,39 +38,9 @@ func retry(callback func() error, numRetries int, waitSeconds int) error {
 
 type HttpDispatcher struct {
 	logger log.Logger
-	websocketConnections eventstore.NamedNetworkConnectionsMap
 }
 
 func (d *HttpDispatcher) Dispatch(e eventstore.PersistedEvent, s eventstore.Subscription) error {
-	if len(s.Url) == 0 {
-		conn, err := d.websocketConnections.Get(s.Name)
-
-		if err != nil {
-			d.logger.Error("Unable to get websocket connection", log.String("error", err.Error()))
-			return err
-		}
-
-		err = conn.WriteEvent(e)
-
-		if err != nil {
-			d.logger.Error("Unable to send event to websocket", log.String("error", err.Error()))
-			return err
-		}
-
-		ack, err := conn.ReadAckMessage()
-
-		if err != nil {
-			d.logger.Error("Received supposed ACK/NACK but can not read json", log.String("error", err.Error()))
-			return err
-		}
-
-		if ! ack.Success {
-			return errors.New("Received NACK from endpoint")
-		}
-
-		return nil
-	}
-
 	return retry(func() error {
 		d.logger.Info("Sending out request to endpoint", log.String("url", s.Url), log.Int("eventPosition", int(e.Position)), log.String("subscription", s.Name))
 
@@ -111,9 +81,8 @@ func (d *HttpDispatcher) OnSubscriptionResumed(s eventstore.Subscription) {
 
 }
 
-func CreateHttpDispatcher(logger log.Logger, websocketConnections eventstore.NamedNetworkConnectionsMap) *HttpDispatcher {
+func CreateHttpDispatcher(logger log.Logger) *HttpDispatcher {
 	return &HttpDispatcher{
 		logger: logger,
-		websocketConnections: websocketConnections,
 	}
 }

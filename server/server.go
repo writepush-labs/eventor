@@ -32,7 +32,6 @@ type server struct {
 	storage eventstore.Storage
 	introspect eventstore.IntrospectStorage
 	echo *echo.Echo
-	dispatcher *dispatcher.HttpDispatcher
 	isMirroring bool
 	websocketConnections *websocketConnectionsMap
 }
@@ -400,11 +399,13 @@ func CreateServer(opts *ServerOptions, logger log.Logger) *server {
 	}
 
 	srv.websocketConnections = CreateWebsocketConnectionsMap()
-	srv.dispatcher           = dispatcher.CreateHttpDispatcher(logger, srv.websocketConnections)
 	srv.storage              = persistence.CreateSqliteStorage(*opts.DataPath, logger)
 	srv.introspect           = persistence.CreateIntrospectSqliteStorage()
 
-	es, err := eventstore.Create(srv.storage, srv.dispatcher)
+	es, err := eventstore.Create(srv.storage, map[string]eventstore.EventDispatcher{
+		"default":    dispatcher.CreateHttpDispatcher(logger),
+		"websockets": dispatcher.CreateWebsocketsDispatcher(logger, srv.websocketConnections),
+	})
 
 	if err != nil {
 		logger.Panic(err.Error(), log.String("when", "Create eventstore"))
